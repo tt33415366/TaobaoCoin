@@ -1,0 +1,18 @@
+# 含真实登录 cookie，绝不入库
+config.json
+
+# 运行产物
+taobao_coin.log
+nohup.out
+__pycache__/
+
+# 本地工具配置
+.claude/
+
+# 误装的 npm 包
+node_modules/
+package.json
+package-lock.json
+# Pi 上 nohup/cron 的重定向输出
+stdout.log
+cron.log
