@@ -1,0 +1,13 @@
+{
+  "cookie": "把你的cookie粘贴到这里（从浏览器开发者工具 Network 面板里发往 h5api.m.taobao.com 的请求中复制整串 Cookie）",
+  "run_time": "09:59:30",
+  "snipe_time": "10:00:00",
+  "exchange_retries": 14,
+  "exchange_retry_base": 1,
+  "exchange_retry_max": 15,
+  "tiers": [
+    {"label": "20元红包", "keywords": ["20元", "6000"]},
+    {"label": "10元红包", "keywords": ["10元", "3000"]},
+    {"label": "5元红包",  "keywords": ["5元", "1500"]}
+  ]
+}
