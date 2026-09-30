@@ -58,8 +58,9 @@ def run_once(cfg, gateway=None, clock=None, rng=random, sleep_fn=time.sleep):
     if clock is not None and cfg.snipe_time:
         clock.wait_for(cfg.snipe_time)
 
-    ordered = daily_tier_order(cfg.tiers, rng)
-    log.info("今日档位优先级: %s", " → ".join(t["label"] for t in ordered))
+    ordered = daily_tier_order(cfg.tiers, rng, strategy=cfg.tier_strategy)
+    log.info("今日档位优先级（%s）: %s", cfg.tier_strategy,
+             " → ".join(t["label"] for t in ordered))
 
     for attempt in range(1, cfg.exchange_retries + 1):
         snapshot = gateway.fetch_benefits()

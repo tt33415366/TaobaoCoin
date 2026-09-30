@@ -38,8 +38,16 @@ def benefit_matches_tier(item, tier):
     return any(kw in text for kw in tier["keywords"])
 
 
-def daily_tier_order(tiers, rng=random):
-    """每天的档位尝试顺序：前两档（大额档）随机先后，最后一档兜底。"""
+def daily_tier_order(tiers, rng=random, strategy="random"):
+    """每天的档位尝试顺序。
+
+    strategy="fixed"：严格按 tiers 数组顺序（配置的优先级即尝试顺序）。
+    strategy="random"：前两档（大额档）随机先后，最后一档兜底。
+    """
+    if strategy == "fixed":
+        return list(tiers)
+    if strategy != "random":
+        raise ValueError("strategy 只能是 'random' 或 'fixed': {}".format(strategy))
     if len(tiers) <= 2:
         order = list(tiers)
         rng.shuffle(order)

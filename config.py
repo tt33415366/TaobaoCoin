@@ -22,14 +22,18 @@ _DEFAULTS = {
     "exchange_retries": 14,
     "exchange_retry_base": 1,
     "exchange_retry_max": 15,
+    "tier_strategy": "random",
 }
+
+TIER_STRATEGIES = ("random", "fixed")
 
 
 class Config:
     """默认值已解析、校验已完成的配置。属性直达，不再有 cfg.get(..., default)。"""
 
     def __init__(self, cookie, run_time, snipe_time, exchange_retries,
-                 exchange_retry_base, exchange_retry_max, tiers):
+                 exchange_retry_base, exchange_retry_max, tiers,
+                 tier_strategy):
         self.cookie = cookie
         self.run_time = run_time
         self.snipe_time = snipe_time
@@ -37,6 +41,7 @@ class Config:
         self.exchange_retry_base = exchange_retry_base
         self.exchange_retry_max = exchange_retry_max
         self.tiers = tiers
+        self.tier_strategy = tier_strategy
 
     @classmethod
     def load(cls, path):
@@ -58,6 +63,12 @@ class Config:
                 "复制整串 Cookie（页面文档请求的 cookie 不带登录态）", ", ".join(missing)
             )
 
+        tier_strategy = raw.get("tier_strategy", _DEFAULTS["tier_strategy"])
+        if tier_strategy not in TIER_STRATEGIES:
+            raise ValueError(
+                "tier_strategy 只能是 {}，当前值: {}".format(TIER_STRATEGIES, tier_strategy)
+            )
+
         return cls(
             cookie=cookie,
             run_time=raw.get("run_time", _DEFAULTS["run_time"]),
@@ -66,4 +77,5 @@ class Config:
             exchange_retry_base=float(raw.get("exchange_retry_base", _DEFAULTS["exchange_retry_base"])),
             exchange_retry_max=float(raw.get("exchange_retry_max", _DEFAULTS["exchange_retry_max"])),
             tiers=raw.get("tiers") or list(DEFAULT_TIERS),
+            tier_strategy=tier_strategy,
         )

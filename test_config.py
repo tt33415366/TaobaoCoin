@@ -28,6 +28,7 @@ class TestConfigLoad(unittest.TestCase):
         self.assertEqual(cfg.exchange_retries, 14)
         self.assertEqual(cfg.exchange_retry_base, 1)
         self.assertEqual(cfg.exchange_retry_max, 15)
+        self.assertEqual(cfg.tier_strategy, "random")
         self.assertEqual([t["label"] for t in cfg.tiers],
                          ["20元红包", "10元红包", "5元红包"])
 
@@ -37,12 +38,20 @@ class TestConfigLoad(unittest.TestCase):
                 "cookie": GOOD_COOKIE,
                 "run_time": "08:00",
                 "exchange_retries": 3,
+                "tier_strategy": "fixed",
                 "tiers": [{"label": "X", "keywords": ["k"]}],
             })
             cfg = Config.load(path)
         self.assertEqual(cfg.run_time, "08:00")
         self.assertEqual(cfg.exchange_retries, 3)
+        self.assertEqual(cfg.tier_strategy, "fixed")
         self.assertEqual(cfg.tiers, [{"label": "X", "keywords": ["k"]}])
+
+    def test_invalid_tier_strategy_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write_cfg(d, {"cookie": GOOD_COOKIE, "tier_strategy": "bogus"})
+            with self.assertRaises(ValueError):
+                Config.load(path)
 
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):

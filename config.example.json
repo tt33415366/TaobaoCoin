@@ -5,6 +5,7 @@
   "exchange_retries": 14,
   "exchange_retry_base": 1,
   "exchange_retry_max": 15,
+  "tier_strategy": "random",
   "tiers": [
     {"label": "20元红包", "keywords": ["20元", "6000"]},
     {"label": "10元红包", "keywords": ["10元", "3000"]},

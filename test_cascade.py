@@ -112,6 +112,27 @@ class TestDailyTierOrder(unittest.TestCase):
             seen.add(daily_tier_order(TIERS, rng)[0]["label"])
         self.assertEqual(seen, {"10元红包", "20元红包"})
 
+    def test_fixed_strategy_preserves_config_order(self):
+        # fixed = 严格按 tiers 数组顺序，20元 永远第一
+        for seed in range(50):
+            rng = random.Random(seed)
+            order = daily_tier_order(TIERS, rng, strategy="fixed")
+            self.assertEqual([t["label"] for t in order],
+                             ["20元红包", "10元红包", "5元红包"])
+
+    def test_random_is_default_strategy(self):
+        # 不显式传 strategy 时维持随机（向后兼容）
+        seen = set()
+        rng = random.Random()
+        for seed in range(100):
+            rng.seed(seed)
+            seen.add(daily_tier_order(TIERS, rng)[0]["label"])
+        self.assertEqual(len(seen), 2)
+
+    def test_unknown_strategy_raises(self):
+        with self.assertRaises(ValueError):
+            daily_tier_order(TIERS, random.Random(0), strategy="bogus")
+
 
 class TestCascade(unittest.TestCase):
     def test_first_tier_success(self):

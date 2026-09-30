@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """taobao_coin.py 入口编排的测试。运行: python3 test_main.py"""
 
+import random
 import unittest
 
 from gateway import ExchangeFailed, HomeSnapshot, Benefit, SessionExpired
@@ -66,6 +67,7 @@ class FakeCfg:
     exchange_retries = 3
     exchange_retry_base = 1
     exchange_retry_max = 15
+    tier_strategy = "random"
     tiers = [
         {"label": "20元红包", "keywords": ["20元", "6000"]},
         {"label": "10元红包", "keywords": ["10元", "3000"]},
@@ -73,9 +75,23 @@ class FakeCfg:
     ]
 
 
-def run(gw, clock=None, sleeper=None, cfg=None):
-    return run_once(cfg or FakeCfg(), gateway=gw, clock=clock,
-                    sleep_fn=sleeper or FakeSleeper())
+def run(gw, clock=None, sleeper=None, cfg=None, rng=None):
+    kwargs = dict(gateway=gw, clock=clock, sleep_fn=sleeper or FakeSleeper())
+    if rng is not None:
+        kwargs["rng"] = rng
+    return run_once(cfg or FakeCfg(), **kwargs)
+
+
+class TestTierStrategyWiring(unittest.TestCase):
+    def test_fixed_strategy_always_tries_20_first(self):
+        # rng 种子 1 的 shuffle 会把 10元 排到最前；fixed 策略必须无视随机，
+        # 始终 20元 优先
+        cfg = FakeCfg()
+        cfg.tier_strategy = "fixed"
+        gw = FakeGateway([snap([B20, B10, B5])],
+                         {"code20": {"ok": 1}, "code10": {"ok": 1}})
+        run(gw, cfg=cfg, rng=random.Random(1))
+        self.assertEqual(gw.exchange_calls, ["code20"])
 
 
 class TestRetryInterval(unittest.TestCase):
