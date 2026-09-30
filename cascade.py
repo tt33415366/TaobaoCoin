@@ -25,9 +25,16 @@ class ExchangeOutcome:
 
 
 def benefit_matches_tier(item, tier):
-    """权益项的完整 JSON 文本命中 tier 的任一 keyword 即匹配。"""
-    import json
-    text = json.dumps(item, ensure_ascii=False)
+    """在语义字段（标题、面额、消耗金币）上命中 tier 的任一 keyword 即匹配。
+
+    不做整段 JSON 子串匹配：无关字段会误命中——真实接口里每个权益的
+    图床 URL 都含 "6000000000…"，曾让 10元项命中 20元档的 "6000" 关键词。"""
+    text = "{} {}{} {}".format(
+        item.get("displayTitle", ""),
+        item.get("displayAmount", ""),
+        item.get("displayAmountUnit", ""),
+        item.get("reduceCoinAmount", ""),
+    )
     return any(kw in text for kw in tier["keywords"])
 
 
@@ -65,7 +72,13 @@ def cascade_exchange(benefits, ordered_tiers, exchange_fn):
             attempts.append((tier["label"], str(e)))
             continue
 
-        log.info("✅ 兑换成功【%s】", tier["label"])
+        # 成功日志以服务端返回的实际面额为准，不只报档位标签：
+        # 2026-09-30 曾因匹配错位把 10元记成「✅ 兑换成功【20元红包】」
+        if isinstance(award, dict) and award.get("displayAmount"):
+            log.info("✅ 兑换成功【%s】实际到账 %s%s", tier["label"],
+                     award["displayAmount"], award.get("displayAmountUnit", ""))
+        else:
+            log.info("✅ 兑换成功【%s】", tier["label"])
         attempts.append((tier["label"], "成功"))
         return ExchangeOutcome(success=True, tier_label=tier["label"],
                                award=award, attempts=attempts)

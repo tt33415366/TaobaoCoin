@@ -51,6 +51,49 @@ class TestMatching(unittest.TestCase):
         self.assertTrue(benefit_matches_tier(benefit, tier))
 
 
+# 真实接口返回的 10元权益（2026-09-30 抓取，字段照抄）：
+# CDN 图 URL 里的 "6000000002272" 包含子串 "6000"，
+# 全 JSON 子串匹配会让它误命中 20元档的 "6000" 关键词。
+REALISTIC_10YUAN = {
+    "asac": "2A24A17A33HG02DHKF2BEX",
+    "benefitBigPic": "https://img.alicdn.com/imgextra/i3/O1CN01Vaawln1SectM5FtJH_!!6000000002272-2-tps-96-128.png",
+    "benefitCode": "d5af47cdbfe64de9a0e5f39bdd87b0ad",
+    "direction": "每周限兑1次",
+    "displayAmount": "10",
+    "displayAmountType": "money",
+    "displayAmountUnit": "元",
+    "displayTitle": "10元红包",
+    "endTime": 1798732799000,
+    "issueStatus": 3,
+    "reduceCoinAmount": 3000,
+    "startFee": 1,
+    "startTime": 1790784000000,
+    "type": "fpRedEnvelope",
+    "useArea": "每日10点更新",
+}
+
+
+class TestRealisticPayloadMatching(unittest.TestCase):
+    """回归：2026-09-30 日志误报「✅ 兑换成功【20元红包】」，实际到账 10元。
+
+    根因：benefit_matches_tier 对整段 JSON 做子串匹配，图床 URL
+    "...6000000002272..." 命中 20元档的 "6000" 关键词，且服务端在整点后
+    重排列表使 10元项排在最前，于是 20元档兑走了 10元的 benefitCode。
+    """
+
+    def test_image_url_does_not_match_higher_tier(self):
+        tier20 = TIERS[0]
+        self.assertFalse(benefit_matches_tier(REALISTIC_10YUAN, tier20))
+
+    def test_success_label_reflects_actual_award(self):
+        # 列表里只剩 10元一项（20元整点售罄被撤下），20元档优先也必须如实报 10元
+        fn, calls = stub_exchange({REALISTIC_10YUAN["benefitCode"]: {"displayAmount": "10"}})
+        outcome = cascade_exchange([REALISTIC_10YUAN], TIERS, fn)
+        self.assertTrue(outcome.success)
+        self.assertEqual(calls, [REALISTIC_10YUAN["benefitCode"]])
+        self.assertEqual(outcome.tier_label, "10元红包")
+
+
 class TestDailyTierOrder(unittest.TestCase):
     def test_last_tier_always_last(self):
         rng = random.Random()
