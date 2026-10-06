@@ -103,9 +103,10 @@
 | `exchange_retry_base` | `1` | 首次重试间隔秒数，之后指数翻倍（1→2→4→8…） |
 | `exchange_retry_max` | `15` | 重试间隔上限秒数 |
 | `tier_strategy` | `random` | 档位优先级策略：`random` = 前两档每日随机；`fixed` = 严格按 `tiers` 数组顺序（如 20元 永远优先） |
+| `features` | 全开 | 功能开关：`exchange` = 每日狙击兑换；`collect` = 每日收取。关 `collect`：只兑换（收菜日同时失去 cookie 存活探针）；关 `exchange`：每天都是纯收取日（无首页探测，抖动后只收取）。两者不能同时为 `false`（启动报错）。`--now`/`--collect` 手动调用不受开关限制 |
 | `tiers` | 20/10/5 元三档 | 档位关键词，`keywords` 命中权益的面额/金币字段即匹配 |
 
-本轮没有引入新配置项：收取的抖动上限（`COLLECTION_JITTER_MINUTES`）在 `taobao_coin.py`，
+收取的抖动上限（`COLLECTION_JITTER_MINUTES`）在 `taobao_coin.py`，
 收取接口的 spm/金币字段名/载荷常量在 `gateway.py` 顶部，需要调整时直接改常量。
 
 ## 注意事项
