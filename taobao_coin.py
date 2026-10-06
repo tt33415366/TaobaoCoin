@@ -117,20 +117,33 @@ def run_daily_flow(cfg, gateway=None, clock=None, rng=random, sleep_fn=time.slee
     再分别执行「狙击+收取」或「抖动+收取」。无跨日状态文件，每天由当天首页
     数据重新判定；首页权益恢复（新一周）即自动回到狙击日。
 
+    features 开关的唯一决策点在本函数（--now/--collect 手动路径不读它）：
+    - 兑换关闭 → 纯收取日（CONTEXT.md）：不做首页探测（无意义请求不发），
+      抖动后只做每日收取
+    - 收取关闭 → 收菜日探测照旧但不收取不抖动；狙击日兑换结束即完
+
     收取在兑换流程正常结束后立刻执行（成功/重试耗尽/全档周限都算正常结束）；
     SessionExpired / RiskControlBlocked 从兑换路径抛出时跳过收取，交给常驻
     循环的外层网。返回值与退出码只看兑换侧，收取失败只记日志。"""
     gateway = gateway or TaoCoinGateway(cfg.cookie)
 
+    if not cfg.exchange_enabled:
+        log.info("兑换已关闭（features.exchange=false），今日为纯收取日")
+        return _collection_day(gateway, rng, sleep_fn)
+
     # 读探测：模式判定的唯一依据（read-only，不消耗兑换机会），run_time 准点发生
     snapshot = gateway.fetch_benefits()
     if snapshot.exchanged_all:
         log.info("首页显示当周红包已全部兑换，今日为收菜日")
+        if not cfg.collect_enabled:
+            log.info("每日收取已关闭（features.collect=false），今日无事")
+            return DailyRunResult.WEEK_COMPLETE
         return _collection_day(gateway, rng, sleep_fn)
 
     result = run_once(cfg, gateway=gateway, clock=clock, rng=rng, sleep_fn=sleep_fn)
     # 狙击日：兑换流程正常结束后立刻收取，时刻天然不规则，不加抖动
-    _log_collection_summary(run_daily_collection(gateway))
+    if cfg.collect_enabled:
+        _log_collection_summary(run_daily_collection(gateway))
     return result
 
 
@@ -182,10 +195,14 @@ def main():
         return
 
     if collect_mode:
+        if not cfg.collect_enabled:
+            log.info("提示：features.collect=false，--collect 是手动显式调用，仍执行")
         collect_once(cfg)
         return
 
     if now_mode:
+        if not cfg.exchange_enabled:
+            log.info("提示：features.exchange=false，--now 是手动显式调用，仍执行")
         # --now 保持只测兑换路径（狙击等待+级联），不跑每日收取
         run_once(cfg)
         return

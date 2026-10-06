@@ -123,6 +123,8 @@ class FakeCfg:
     exchange_retry_base = 1
     exchange_retry_max = 15
     tier_strategy = "random"
+    exchange_enabled = True
+    collect_enabled = True
     tiers = [
         {"label": "20元红包", "keywords": ["20元", "6000"]},
         {"label": "10元红包", "keywords": ["10元", "3000"]},
@@ -357,6 +359,49 @@ class TestRunDailyFlow(unittest.TestCase):
                              "collect_sign_reward": ExchangeFailed("今日已签到")})
         result = run_flow(gw, rng=FakeRng())
         self.assertEqual(result, DailyRunResult.SUCCESS)
+
+
+class TestFeaturesToggleDailyFlow(unittest.TestCase):
+    """features 开关：run_daily_flow 是开关的唯一决策点（CLI 路径不读它）。"""
+
+    def test_exchange_disabled_makes_pure_collection_day(self):
+        # 关兑换 → 纯收取日：无首页探测（无意义请求不发）、有抖动、只做收取
+        cfg = FakeCfg()
+        cfg.exchange_enabled = False
+        rng = FakeRng(uniform_value=10.0)
+        gw = FakeGateway([snap([B20, B10, B5])], {})
+        sleeper = FakeSleeper()
+        result = run_flow(gw, cfg=cfg, rng=rng, sleeper=sleeper)
+        self.assertEqual(result, DailyRunResult.WEEK_COMPLETE)
+        self.assertEqual(gw.fetch_count, 0)
+        self.assertEqual(gw.exchange_calls, [])
+        self.assertEqual(rng.uniform_calls, [(0, 30)])
+        self.assertEqual(sleeper.slept, [600.0])
+        self.assertIn("collect_sign_reward", gw.collect_calls)
+
+    def test_collect_disabled_snipe_day_skips_collection(self):
+        # 关收取的狙击日：兑换照常，结束即完，无收取
+        cfg = FakeCfg()
+        cfg.collect_enabled = False
+        gw = FakeGateway([snap([B20, B10, B5])], {"code20": {"ok": 1}})
+        result = run_flow(gw, cfg=cfg, rng=FakeRng())
+        self.assertEqual(result, DailyRunResult.SUCCESS)
+        self.assertEqual(gw.exchange_calls, ["code20"])
+        self.assertEqual(gw.collect_calls, [])
+
+    def test_collect_disabled_collection_day_is_quiet(self):
+        # 关收取的收菜日：探测仍做（模式判定），但不抖动、不收取、不空转
+        cfg = FakeCfg()
+        cfg.collect_enabled = False
+        rng = FakeRng()
+        gw = FakeGateway([snap(exchanged_all=True)], {})
+        sleeper = FakeSleeper()
+        result = run_flow(gw, cfg=cfg, rng=rng, sleeper=sleeper)
+        self.assertEqual(result, DailyRunResult.WEEK_COMPLETE)
+        self.assertEqual(gw.fetch_count, 1)
+        self.assertEqual(gw.collect_calls, [])
+        self.assertEqual(rng.uniform_calls, [])
+        self.assertEqual(sleeper.slept, [])
 
 
 if __name__ == "__main__":

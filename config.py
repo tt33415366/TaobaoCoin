@@ -33,7 +33,7 @@ class Config:
 
     def __init__(self, cookie, run_time, snipe_time, exchange_retries,
                  exchange_retry_base, exchange_retry_max, tiers,
-                 tier_strategy):
+                 tier_strategy, exchange_enabled, collect_enabled):
         self.cookie = cookie
         self.run_time = run_time
         self.snipe_time = snipe_time
@@ -42,6 +42,8 @@ class Config:
         self.exchange_retry_max = exchange_retry_max
         self.tiers = tiers
         self.tier_strategy = tier_strategy
+        self.exchange_enabled = exchange_enabled
+        self.collect_enabled = collect_enabled
 
     @classmethod
     def load(cls, path):
@@ -69,6 +71,14 @@ class Config:
                 "tier_strategy 只能是 {}，当前值: {}".format(TIER_STRATEGIES, tier_strategy)
             )
 
+        features = raw.get("features") or {}
+        exchange_enabled = bool(features.get("exchange", True))
+        collect_enabled = bool(features.get("collect", True))
+        if not exchange_enabled and not collect_enabled:
+            raise ValueError(
+                "features 的 exchange 与 collect 不能同时为 false——"
+                "两个功能都关的常驻进程只会静默空转")
+
         return cls(
             cookie=cookie,
             run_time=raw.get("run_time", _DEFAULTS["run_time"]),
@@ -78,4 +88,6 @@ class Config:
             exchange_retry_max=float(raw.get("exchange_retry_max", _DEFAULTS["exchange_retry_max"])),
             tiers=raw.get("tiers") or list(DEFAULT_TIERS),
             tier_strategy=tier_strategy,
+            exchange_enabled=exchange_enabled,
+            collect_enabled=collect_enabled,
         )

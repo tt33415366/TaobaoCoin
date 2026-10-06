@@ -71,5 +71,33 @@ class TestConfigLoad(unittest.TestCase):
         self.assertTrue(any("cookie2" in m for m in cm.output))
 
 
+class TestFeaturesToggle(unittest.TestCase):
+    def test_features_default_both_enabled(self):
+        # 不加 features 段 = 现状：兑换与每日收取都开
+        with tempfile.TemporaryDirectory() as d:
+            path = write_cfg(d, {"cookie": GOOD_COOKIE})
+            cfg = Config.load(path)
+        self.assertTrue(cfg.exchange_enabled)
+        self.assertTrue(cfg.collect_enabled)
+
+    def test_features_can_disable_individually(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write_cfg(d, {"cookie": GOOD_COOKIE,
+                                 "features": {"collect": False}})
+            cfg = Config.load(path)
+        self.assertTrue(cfg.exchange_enabled)
+        self.assertFalse(cfg.collect_enabled)
+
+    def test_features_both_disabled_raises(self):
+        # 两个都关的常驻进程是静默浪费，99% 是配置笔误：明确报错
+        with tempfile.TemporaryDirectory() as d:
+            path = write_cfg(d, {"cookie": GOOD_COOKIE,
+                                 "features": {"exchange": False, "collect": False}})
+            with self.assertRaises(ValueError) as cm:
+                Config.load(path)
+        self.assertIn("exchange", str(cm.exception))
+        self.assertIn("collect", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
