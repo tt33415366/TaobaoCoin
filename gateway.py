@@ -38,7 +38,7 @@ MTOP_ENDPOINT = "https://h5api.m.taobao.com/h5/{api}/{v}/"
 API_HOME = "mtop.taobao.pc.growth.taocoin.queryTaoCoinHomeV2"
 API_EXCHANGE = "mtop.taobao.pc.growth.taocoin.exchangeBenefit"
 
-# 每日收取接口（从页面 live JS bundle 逆向 + 2026-10-02 实测校准）
+# 每日收取接口（从页面 live JS bundle 逆向 + 2026-10-02/07 两次实测校准）
 API_SIGN_COLLECT = "mtop.coingame.collect.reward.pc"
 API_SIGN_SYNC = "mtop.taobao.pc.growth.taocoin.pcSign4Sync"
 API_COIN_TOWN = "mtop.coingame.town.index.get.pc"
@@ -49,8 +49,8 @@ API_COIN_TOWN = "mtop.coingame.town.index.get.pc"
 ASAC_HOME = "2A24C24PP4OZC3YF9XCDIA"
 ASAC_EXCHANGE = "2A24A17A33HG02DHKF2BEX"
 
-# coingame 系接口的 params 是页面 URL 的 query 串（含 spm）
-SIGN_COLLECT_PARAMS = "spm=a21bo.jianhua/a.youshang_shoutui.1.5af92a89RaBtg4"
+# coingame 系接口的载荷不含 params：页面 JS 的 params 是序列化 bug（JSON.stringify
+# 了函数引用，实际请求不发送）；多带 params 会让签到被服务端静默吞掉（2026-10-07 实测）
 
 # 签到成功时的金币字段：按序尝试，首个真值生效（已签到时整个 data 为 {}）
 REWARD_FIELDS = ("totalCoinReward", "coinAmount", "rewardCoin")
@@ -268,12 +268,13 @@ class TaoCoinGateway:
     # -------------------------------------------------------- 每日收取动词
 
     def collect_sign_reward(self):
-        """签到+收币（同一动作），返回本次获得金币数。已签到等业务失败抛 ExchangeFailed。"""
+        """签到+收币（同一动作），返回本次获得金币数。已签到等业务失败抛 ExchangeFailed。
+        载荷与页面请求逐字节一致（2026-10-07 实测）：页面 JS 的 params 是序列化
+        bug（实际不发送），多带会被服务端静默吞掉——SUCCESS 但空 data、不报错。"""
         _, data = self._transport.request(API_SIGN_COLLECT, {
             "bizCode": "taoCoin",
             "subBizCode": "coinTown",
             "page": "pc",
-            "params": SIGN_COLLECT_PARAMS,
         })
         return self._extract_reward(data, "签到+收币")
 
@@ -290,7 +291,6 @@ class TaoCoinGateway:
         _, data = self._transport.request(API_COIN_TOWN, {
             "bizCode": "taoCoin",
             "subBizCode": "coinTown",
-            "params": SIGN_COLLECT_PARAMS,
         })
         model = (data or {}).get("model")
         if not isinstance(model, dict):

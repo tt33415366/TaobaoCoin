@@ -213,11 +213,12 @@ class TestCollectVerbs(unittest.TestCase):
         gw = TaoCoinGateway("c", transport=t)
         self.assertEqual(gw.collect_sign_reward(), 5)
         _, data = t.calls[0]
+        # 与页面请求逐字节一致（2026-10-07 实测）：页面 JS 的 params 是序列化 bug
+        # 实际不发送；多带 params 会被服务端静默吞掉（SUCCESS 但空 data）
         self.assertEqual(data, {
             "bizCode": "taoCoin",
             "subBizCode": "coinTown",
             "page": "pc",
-            "params": "spm=a21bo.jianhua/a.youshang_shoutui.1.5af92a89RaBtg4",
         })
 
     def test_sign_collect_reward_at_outer_layer(self):
@@ -268,7 +269,6 @@ class TestCollectVerbs(unittest.TestCase):
         self.assertEqual(t.calls[0][1], {
             "bizCode": "taoCoin",
             "subBizCode": "coinTown",
-            "params": "spm=a21bo.jianhua/a.youshang_shoutui.1.5af92a89RaBtg4",
         })
 
     def test_query_coin_town_not_signed(self):

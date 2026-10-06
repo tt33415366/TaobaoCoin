@@ -59,6 +59,14 @@ def run_daily_collection(gateway):
     if before is not None and before.signed:
         log.info("今日已签到，跳过签到动作")
     else:
+        # 未签才做页面热身（2026-10-07 实测校准）：页面挂载时先调
+        # town.index + queryTaoCoinHomeV2 再发签到。复刻这个顺序后签到成功
+        # （此前无热身且多带 params 的调用被服务端静默吞掉：SUCCESS 但空 data）。
+        # 热身失败不阻塞签到；已签跳过则连热身也不发（无意义请求不发）。
+        try:
+            gateway.fetch_benefits()
+        except Exception as e:  # noqa: BLE001 - 热身只是会话铺垫，失败不致命
+            log.warning("签到前首页热身失败，仍尝试签到: %s", e)
         for label, action in (("签到+收币", gateway.collect_sign_reward),
                               ("签到状态同步", gateway.sync_sign_status)):
             try:

@@ -17,3 +17,6 @@ package-lock.json
 stdout.log
 cron.log
 .scratch/
+
+# 账号轮换备份（含真实 cookie）
+config.json.*

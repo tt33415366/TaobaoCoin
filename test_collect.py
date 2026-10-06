@@ -38,6 +38,9 @@ class FakeCollectGateway:
     def sync_sign_status(self):
         return self._run("sync_sign_status")
 
+    def fetch_benefits(self):
+        return self._run("fetch_benefits")
+
 
 def collect(gateway):
     return run_daily_collection(gateway)
@@ -51,8 +54,10 @@ class TestDailyCollection(unittest.TestCase):
             "collect_sign_reward": 999,  # 自报值应被余额差覆盖
         })
         result = collect(gw)
-        self.assertEqual(gw.calls, ["query_coin_town", "collect_sign_reward",
-                                    "sync_sign_status", "query_coin_town"])
+        # 未签：town → 首页热身（页面挂载顺序复刻）→ 签到 → 同步 → 收尾 town
+        self.assertEqual(gw.calls, ["query_coin_town", "fetch_benefits",
+                                    "collect_sign_reward", "sync_sign_status",
+                                    "query_coin_town"])
         self.assertEqual(result.coins_gained, 40)
         self.assertEqual(result.balance, 140)
         self.assertFalse(result.session_expired)
@@ -84,8 +89,9 @@ class TestDailyCollection(unittest.TestCase):
             "collect_sign_reward": 7,
         })
         result = collect(gw)
-        self.assertEqual(gw.calls, ["query_coin_town", "collect_sign_reward",
-                                    "sync_sign_status", "query_coin_town"])
+        self.assertEqual(gw.calls, ["query_coin_town", "fetch_benefits",
+                                    "collect_sign_reward", "sync_sign_status",
+                                    "query_coin_town"])
         self.assertEqual(result.coins_gained, 7)
         self.assertFalse(result.session_expired)
 
