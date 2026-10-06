@@ -4,24 +4,28 @@
 interface 只有一个 cascade_exchange(benefits, tiers, exchange_fn)；
 exchange_fn 是 seam：生产注 gateway.exchange，测试注 scripted stub。
 级联契约：ExchangeFailed 落下一档；SessionExpired / RiskControlBlocked 直接抛出（当天中止）。
+WeeklyLimitReached 是 ExchangeFailed 的子类，同样落下一档，但单独计数：
+全档周限（all_week_limited）供状态机判定收菜日。
 """
 
 import logging
 import random
 from dataclasses import dataclass, field
 
-from gateway import ExchangeFailed
+from gateway import ExchangeFailed, WeeklyLimitReached
 
 log = logging.getLogger("cascade")
 
 
 @dataclass
 class ExchangeOutcome:
-    """一轮级联的结果。attempts 记录每档的 (label, 结果描述)。"""
+    """一轮级联的结果。attempts 记录每档的 (label, 结果描述)；
+    all_week_limited 标记所有实际尝试过兑换的档位是否全报「已达周限」。"""
     success: bool
     tier_label: str = None
     award: dict = None
     attempts: list = field(default_factory=list)
+    all_week_limited: bool = False
 
 
 def benefit_matches_tier(item, tier):
@@ -59,8 +63,12 @@ def daily_tier_order(tiers, rng=random, strategy="random"):
 
 def cascade_exchange(benefits, ordered_tiers, exchange_fn):
     """按优先级逐档尝试。全部失败返回 success=False 的 ExchangeOutcome；
-    SessionExpired / RiskControlBlocked 不捕获，直接向上抛出。"""
+    SessionExpired / RiskControlBlocked 不捕获，直接向上抛出。
+    WeeklyLimitReached 照常落下一档，但单独计数：实际尝试过的档位
+    全部报「已达周限」时 outcome.all_week_limited=True。"""
     attempts = []
+    tried = 0
+    weekly_hits = 0
     for tier in ordered_tiers:
         item = next((b for b in benefits if benefit_matches_tier(b, tier)), None)
         if not item:
@@ -75,7 +83,15 @@ def cascade_exchange(benefits, ordered_tiers, exchange_fn):
         log.info("尝试兑换【%s】(benefitCode: %s…)…", tier["label"], code[:12])
         try:
             award = exchange_fn(code)
+        except WeeklyLimitReached as e:
+            # 已达周限：级联语义不变，仍落下一档；单独计数供状态机判定收菜日
+            tried += 1
+            weekly_hits += 1
+            log.warning("【%s】已达周限 → 落到下一档", tier["label"])
+            attempts.append((tier["label"], str(e)))
+            continue
         except ExchangeFailed as e:
+            tried += 1
             log.warning("【%s】失败: %s → 落到下一档", tier["label"], e)
             attempts.append((tier["label"], str(e)))
             continue
@@ -93,4 +109,6 @@ def cascade_exchange(benefits, ordered_tiers, exchange_fn):
 
     if not attempts:
         log.warning("没有匹配到任何目标档位，请检查 config.json 的 tiers 关键词")
-    return ExchangeOutcome(success=False, attempts=attempts)
+    return ExchangeOutcome(
+        success=False, attempts=attempts,
+        all_week_limited=tried > 0 and weekly_hits == tried)

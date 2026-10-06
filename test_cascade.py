@@ -10,7 +10,7 @@ from cascade import (
     cascade_exchange,
     daily_tier_order,
 )
-from gateway import ExchangeFailed, RiskControlBlocked, SessionExpired
+from gateway import ExchangeFailed, RiskControlBlocked, SessionExpired, WeeklyLimitReached
 
 TIERS = [
     {"label": "20元红包", "keywords": ["20元", "6000"]},
@@ -215,6 +215,41 @@ class TestCascade(unittest.TestCase):
         outcome = cascade_exchange(benefits, TIERS, fn)
         self.assertTrue(outcome.success)
         self.assertEqual(calls, ["code10"])
+
+
+class TestWeeklyLimitOutcome(unittest.TestCase):
+    """「已达周限」单独计数：全档周限供状态机判定收菜日，级联语义本身不变。"""
+
+    def test_all_tiers_weekly_limited_flagged(self):
+        fn, calls = stub_exchange({
+            "code20": WeeklyLimitReached("已达周限"),
+            "code10": WeeklyLimitReached("已达周限"),
+            "code5": WeeklyLimitReached("已达周限"),
+        })
+        outcome = cascade_exchange(BENEFITS, TIERS, fn)
+        self.assertFalse(outcome.success)
+        self.assertTrue(outcome.all_week_limited)
+        self.assertEqual(len(calls), 3)
+
+    def test_mixed_weekly_and_sold_out_not_flagged(self):
+        # 只要有一档不是周限（如售罄），当天就不是收菜转换信号
+        fn, _ = stub_exchange({
+            "code20": WeeklyLimitReached("已达周限"),
+            "code10": ExchangeFailed("权益已变更，请刷新后重试"),
+            "code5": ExchangeFailed("权益已变更，请刷新后重试"),
+        })
+        outcome = cascade_exchange(BENEFITS, TIERS, fn)
+        self.assertFalse(outcome.all_week_limited)
+
+    def test_weekly_limit_still_falls_to_next_tier(self):
+        # WeeklyLimitReached 是 ExchangeFailed 子类：级联照常落下一档
+        fn, calls = stub_exchange({
+            "code20": WeeklyLimitReached("已达周限"),
+            "code10": {"award": "10元"},
+        })
+        outcome = cascade_exchange(BENEFITS, TIERS, fn)
+        self.assertTrue(outcome.success)
+        self.assertEqual(calls, ["code20", "code10"])
 
 
 if __name__ == "__main__":

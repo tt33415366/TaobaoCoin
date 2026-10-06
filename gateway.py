@@ -2,14 +2,20 @@
 """淘金币 Gateway：与淘宝淘金币活动服务端交互的唯一通道。
 
 interface 收窄到领域语言：
-    fetch_benefits() -> HomeSnapshot   查可兑换权益列表
-    exchange(code)   -> dict           按 benefitCode 兑换，返回奖品
+    fetch_benefits()      -> HomeSnapshot   查可兑换权益列表
+    exchange(code)        -> dict           按 benefitCode 兑换，返回奖品
+    collect_sign_reward() -> int            签到+收币（同一动作），返回本次金币数
+    sync_sign_status()    -> int            签到后状态同步（模仿页面），恒 0
+    query_coin_town()     -> CoinTownState  金币小镇状态：余额 + 今日是否已签
 
 implementation 藏住：mtop H5 签名、_m_h5_tk token 刷新、API 名、asac 常量、
 data.data 双层拆包、ret 错误分类。MtopClient 是内部 transport（私有 seam），
 测试通过 transport 参数注入假 adapter。
 
 异常契约：ExchangeFailed 可级联；SessionExpired / RiskControlBlocked 当天中止。
+WeeklyLimitReached 是 ExchangeFailed 的子类：级联语义不变，但「已达周限」单独
+成类，供收菜日状态机判定（关键词集中在本模块，见 classify_biz_error）。
+收取动词的已签到/无可领返币等业务失败也走 ExchangeFailed，由 collect 层当正常结局。
 """
 
 import hashlib
@@ -32,9 +38,22 @@ MTOP_ENDPOINT = "https://h5api.m.taobao.com/h5/{api}/{v}/"
 API_HOME = "mtop.taobao.pc.growth.taocoin.queryTaoCoinHomeV2"
 API_EXCHANGE = "mtop.taobao.pc.growth.taocoin.exchangeBenefit"
 
+# 每日收取接口（从页面 live JS bundle 逆向 + 2026-10-02 实测校准）
+API_SIGN_COLLECT = "mtop.coingame.collect.reward.pc"
+API_SIGN_SYNC = "mtop.taobao.pc.growth.taocoin.pcSign4Sync"
+API_COIN_TOWN = "mtop.coingame.town.index.get.pc"
+# 下单返金币（receivepostpurchasetaocoin）已砍：orderIds 只来自支付后跳转 URL 的
+# bizOrderIds 参数，页面无查询待领订单的接口，自动化它需要交易 API，超出签到类范围
+
 # 从页面 JS（p_gold-index.js）逆向得到的固定参数
 ASAC_HOME = "2A24C24PP4OZC3YF9XCDIA"
 ASAC_EXCHANGE = "2A24A17A33HG02DHKF2BEX"
+
+# coingame 系接口的 params 是页面 URL 的 query 串（含 spm）
+SIGN_COLLECT_PARAMS = "spm=a21bo.jianhua/a.youshang_shoutui.1.5af92a89RaBtg4"
+
+# 签到成功时的金币字段：按序尝试，首个真值生效（已签到时整个 data 为 {}）
+REWARD_FIELDS = ("totalCoinReward", "coinAmount", "rewardCoin")
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -56,6 +75,21 @@ class ExchangeFailed(Exception):
     """业务层兑换失败（如库存已空、已达周限、金币不足）：级联到下一档。"""
 
 
+class WeeklyLimitReached(ExchangeFailed):
+    """业务层「已达周限」：级联仍落到下一档，但单独成类，供状态机判定收菜日。"""
+
+
+# 周限业务文案：ExchangeFailed 消息里出现该关键词即视为「已达周限」
+WEEKLY_LIMIT_KEYWORD = "已达周限"
+
+
+def classify_biz_error(message):
+    """按业务文案分类失败：「已达周限」单独成类，其余维持普通 ExchangeFailed。"""
+    if WEEKLY_LIMIT_KEYWORD in (message or ""):
+        return WeeklyLimitReached(message)
+    return ExchangeFailed(message)
+
+
 # ---------------------------------------------------------------- 领域对象
 
 @dataclass
@@ -71,6 +105,13 @@ class Benefit:
 class HomeSnapshot:
     exchanged_all: bool
     benefits: list
+
+
+@dataclass
+class CoinTownState:
+    """金币小镇状态：余额与今日是否已签（余额的唯一可靠来源，实测 2026-10-02）。"""
+    balance: int
+    signed: bool
 
 
 # ---------------------------------------------------------------- 纯函数
@@ -181,7 +222,7 @@ class MtopClient:
             # 其余失败：优先透出业务层 message（如「权益已变更」=库存已空）
             inner = payload.get("data") or {}
             inner_msg = inner.get("message") if isinstance(inner, dict) else None
-            raise ExchangeFailed(inner_msg or ret_text)
+            raise classify_biz_error(inner_msg or ret_text)
 
         raise SessionExpired("token 重试后仍失败，请更新 cookie")
 
@@ -224,10 +265,63 @@ class TaoCoinGateway:
         log.info("兑换接口返回: %s", json.dumps(inner, ensure_ascii=False)[:300])
         return inner
 
+    # -------------------------------------------------------- 每日收取动词
+
+    def collect_sign_reward(self):
+        """签到+收币（同一动作），返回本次获得金币数。已签到等业务失败抛 ExchangeFailed。"""
+        _, data = self._transport.request(API_SIGN_COLLECT, {
+            "bizCode": "taoCoin",
+            "subBizCode": "coinTown",
+            "page": "pc",
+            "params": SIGN_COLLECT_PARAMS,
+        })
+        return self._extract_reward(data, "签到+收币")
+
+    def sync_sign_status(self):
+        """签到后状态同步（模仿页面行为），不带金币收益。失败抛 ExchangeFailed。"""
+        _, data = self._transport.request(API_SIGN_SYNC, {})
+        self._unwrap(data)
+        return 0
+
+    def query_coin_town(self):
+        """金币小镇状态：余额 + 今日是否已签。实测（2026-10-02）：首页
+        queryTaoCoinHomeV2 不带余额，唯一可靠来源是 town 接口的
+        model.userInfo.coinAmount；model.userSign.signed 标记今日已签。"""
+        _, data = self._transport.request(API_COIN_TOWN, {
+            "bizCode": "taoCoin",
+            "subBizCode": "coinTown",
+            "params": SIGN_COLLECT_PARAMS,
+        })
+        model = (data or {}).get("model")
+        if not isinstance(model, dict):
+            raise ExchangeFailed("town 响应缺少 model 层: "
+                                 + json.dumps(data, ensure_ascii=False)[:200])
+        user = model.get("userInfo") or {}
+        sign = model.get("userSign") or {}
+        return CoinTownState(balance=int(user.get("coinAmount") or 0),
+                             signed=bool(sign.get("signed")))
+
+    def _extract_reward(self, data, label):
+        """收取类接口的公共拆包：业务 code 检查 + 按 REWARD_FIELDS 取金币。
+        金币字段为空视为业务失败（如当日已签到），resultMsg 透出原因。"""
+        inner = self._unwrap(data)
+        outer = data if isinstance(data, dict) else {}
+        for field in REWARD_FIELDS:
+            for layer in (inner, outer):
+                value = layer.get(field) if isinstance(layer, dict) else None
+                if value:
+                    return int(value)
+        msg = None
+        for layer in (inner, outer):
+            if isinstance(layer, dict) and layer.get("resultMsg"):
+                msg = layer["resultMsg"]
+                break
+        raise classify_biz_error("{}: {}".format(label, msg or "未返回金币"))
+
     @staticmethod
     def _unwrap(data):
         """网关层 SUCCESS 不代表业务成功：检查业务 code，拆 data 层。"""
         inner = data or {}
         if isinstance(inner, dict) and inner.get("code") not in (None, 200):
-            raise ExchangeFailed(inner.get("message") or str(inner)[:200])
+            raise classify_biz_error(inner.get("message") or str(inner)[:200])
         return inner.get("data") if isinstance(inner, dict) else {}

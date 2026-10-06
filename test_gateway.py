@@ -8,6 +8,8 @@ from gateway import (
     ExchangeFailed,
     MtopClient,
     TaoCoinGateway,
+    WeeklyLimitReached,
+    classify_biz_error,
     extract_token,
     mtop_sign,
     update_cookie,
@@ -75,6 +77,29 @@ HOME_OK = ("SUCCESS", {"code": 200, "data": {
         {"benefitCode": "code10", "displayTitle": "10元红包", "reduceCoinAmount": 3000},
     ],
 }})
+
+
+class TestWeeklyLimitClassification(unittest.TestCase):
+    """prefactor：「已达周限」从裸 ExchangeFailed 字符串中分类出来。
+    级联仍当 ExchangeFailed 捕获（子类），状态机据类型判定收菜日。"""
+
+    def test_weekly_limit_message_raises_dedicated_subclass(self):
+        exc = classify_biz_error("已达周限，请下周再来")
+        self.assertIsInstance(exc, WeeklyLimitReached)
+        self.assertIsInstance(exc, ExchangeFailed)
+
+    def test_other_biz_message_stays_plain_exchange_failed(self):
+        exc = classify_biz_error("权益已变更，请刷新后重试")
+        self.assertNotIsInstance(exc, WeeklyLimitReached)
+        self.assertIsInstance(exc, ExchangeFailed)
+
+    def test_exchange_path_raises_weekly_limit(self):
+        gw = TaoCoinGateway("c", transport=FakeTransport({
+            "mtop.taobao.pc.growth.taocoin.exchangeBenefit":
+                ("SUCCESS", {"code": -1, "message": "已达周限"}),
+        }))
+        with self.assertRaises(WeeklyLimitReached):
+            gw.exchange("code20")
 
 
 class TestToken(unittest.TestCase):
@@ -173,6 +198,96 @@ class TestExchange(unittest.TestCase):
         }))
         with self.assertRaises(SessionExpired):
             gw.exchange("code10")
+
+
+class TestCollectVerbs(unittest.TestCase):
+    """收取动词：签名+收币、签到同步、金币小镇状态。payload 形状见 gateway 常量。"""
+    SIGN_API = "mtop.coingame.collect.reward.pc"
+    SYNC_API = "mtop.taobao.pc.growth.taocoin.pcSign4Sync"
+    TOWN_API = "mtop.coingame.town.index.get.pc"
+
+    def test_sign_collect_sends_page_payload(self):
+        t = FakeTransport({
+            self.SIGN_API: ("SUCCESS", {"code": 200, "data": {"totalCoinReward": 5}}),
+        })
+        gw = TaoCoinGateway("c", transport=t)
+        self.assertEqual(gw.collect_sign_reward(), 5)
+        _, data = t.calls[0]
+        self.assertEqual(data, {
+            "bizCode": "taoCoin",
+            "subBizCode": "coinTown",
+            "page": "pc",
+            "params": "spm=a21bo.jianhua/a.youshang_shoutui.1.5af92a89RaBtg4",
+        })
+
+    def test_sign_collect_reward_at_outer_layer(self):
+        # coingame 系接口可能不套双层 data：外层的 totalCoinReward 也要认
+        gw = TaoCoinGateway("c", transport=FakeTransport({
+            self.SIGN_API: ("SUCCESS", {"code": 200, "totalCoinReward": 8}),
+        }))
+        self.assertEqual(gw.collect_sign_reward(), 8)
+
+    def test_sign_collect_failure_uses_result_msg(self):
+        # 当日已签到等场景：totalCoinReward 为空，resultMsg 透出原因
+        gw = TaoCoinGateway("c", transport=FakeTransport({
+            self.SIGN_API: ("SUCCESS", {"code": 200,
+                                        "data": {"resultMsg": "今日已签到"}}),
+        }))
+        with self.assertRaises(ExchangeFailed) as cm:
+            gw.collect_sign_reward()
+        self.assertIn("今日已签到", str(cm.exception))
+
+    def test_sign_collect_business_error_code(self):
+        gw = TaoCoinGateway("c", transport=FakeTransport({
+            self.SIGN_API: ("SUCCESS", {"code": -1, "message": "活动太火爆"}),
+        }))
+        with self.assertRaises(ExchangeFailed) as cm:
+            gw.collect_sign_reward()
+        self.assertIn("活动太火爆", str(cm.exception))
+
+    def test_sync_sign_status_sends_empty_data(self):
+        t = FakeTransport({
+            self.SYNC_API: ("SUCCESS", {"code": 200, "data": {"ok": True}}),
+        })
+        gw = TaoCoinGateway("c", transport=t)
+        self.assertEqual(gw.sync_sign_status(), 0)  # 同步只模仿页面，不带收益
+        self.assertEqual(t.calls[0][1], {})
+
+    def test_query_coin_town_parses_balance_and_signed(self):
+        # 实测信封（2026-10-02）：model.userInfo.coinAmount / model.userSign.signed
+        t = FakeTransport({
+            self.TOWN_API: ("SUCCESS", {"model": {
+                "userInfo": {"coinAmount": 154058},
+                "userSign": {"signed": True},
+            }, "resultCode": "SUCCESS"}),
+        })
+        gw = TaoCoinGateway("c", transport=t)
+        state = gw.query_coin_town()
+        self.assertEqual(state.balance, 154058)
+        self.assertTrue(state.signed)
+        self.assertEqual(t.calls[0][1], {
+            "bizCode": "taoCoin",
+            "subBizCode": "coinTown",
+            "params": "spm=a21bo.jianhua/a.youshang_shoutui.1.5af92a89RaBtg4",
+        })
+
+    def test_query_coin_town_not_signed(self):
+        gw = TaoCoinGateway("c", transport=FakeTransport({
+            self.TOWN_API: ("SUCCESS", {"model": {
+                "userInfo": {"coinAmount": 100},
+                "userSign": {"signed": False},
+            }}),
+        }))
+        state = gw.query_coin_town()
+        self.assertEqual(state.balance, 100)
+        self.assertFalse(state.signed)
+
+    def test_query_coin_town_missing_model_raises(self):
+        gw = TaoCoinGateway("c", transport=FakeTransport({
+            self.TOWN_API: ("SUCCESS", {"unexpected": True}),
+        }))
+        with self.assertRaises(ExchangeFailed):
+            gw.query_coin_town()
 
 
 if __name__ == "__main__":

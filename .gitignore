@@ -16,3 +16,4 @@ package-lock.json
 # Pi 上 nohup/cron 的重定向输出
 stdout.log
 cron.log
+.scratch/
