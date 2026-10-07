@@ -129,8 +129,8 @@ class TestFetchBenefits(unittest.TestCase):
         self.assertEqual(snap.benefits[0].code, "code20")
         self.assertEqual(snap.benefits[0].title, "20元红包")
         self.assertEqual(snap.benefits[0].coin_amount, 6000)
-        # raw 保留完整字典供关键词匹配
-        self.assertIn("benefitCode", snap.benefits[0].raw)
+        # match_text 由 gateway 预计算：关键词匹配只走它，线协议字典不过 seam
+        self.assertEqual(snap.benefits[0].match_text, "20元红包  6000")
 
     def test_exchanged_all_flag(self):
         ret, data = HOME_OK
@@ -155,6 +155,45 @@ class TestFetchBenefits(unittest.TestCase):
         })
         TaoCoinGateway("c", transport=t).fetch_benefits()
         self.assertEqual(t.calls[0][1], {"asac": "2A24C24PP4OZC3YF9XCDIA"})
+
+
+# 真实接口返回的 10元权益（2026-09-30 抓取，字段照抄）：
+# CDN 图 URL 里的 "6000000002272" 包含子串 "6000"，
+# 若漏进匹配面会误命中 20元档的 "6000" 关键词（当日确实误兑）。
+REALISTIC_10YUAN_WIRE = {
+    "asac": "2A24A17A33HG02DHKF2BEX",
+    "benefitBigPic": "https://img.alicdn.com/imgextra/i3/O1CN01Vaawln1SectM5FtJH_!!6000000002272-2-tps-96-128.png",
+    "benefitCode": "d5af47cdbfe64de9a0e5f39bdd87b0ad",
+    "direction": "每周限兑1次",
+    "displayAmount": "10",
+    "displayAmountType": "money",
+    "displayAmountUnit": "元",
+    "displayTitle": "10元红包",
+    "endTime": 1798732799000,
+    "issueStatus": 3,
+    "reduceCoinAmount": 3000,
+    "startFee": 1,
+    "startTime": 1790784000000,
+    "type": "fpRedEnvelope",
+    "useArea": "每日10点更新",
+}
+
+
+class TestMatchText(unittest.TestCase):
+    """回归：2026-09-30 误兑根因——匹配面必须只含语义字段，图床 URL 不得漏入。
+    该守卫随 match_text 从 test_cascade 搬到本模块：线协议 schema 只有 gateway 知道。"""
+
+    def test_match_text_excludes_image_url(self):
+        gw = TaoCoinGateway("c", transport=FakeTransport({
+            "mtop.taobao.pc.growth.taocoin.queryTaoCoinHomeV2":
+                ("SUCCESS", {"code": 200, "data": {
+                    "allRedEnvelopeExchanged": False,
+                    "benefitList": [REALISTIC_10YUAN_WIRE],
+                }}),
+        }))
+        b = gw.fetch_benefits().benefits[0]
+        self.assertEqual(b.match_text, "10元红包 10元 3000")
+        self.assertNotIn("6000", b.match_text)
 
 
 class TestExchange(unittest.TestCase):

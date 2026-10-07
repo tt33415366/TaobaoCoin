@@ -94,11 +94,14 @@ def classify_biz_error(message):
 
 @dataclass
 class Benefit:
-    """一条可兑换权益。raw 保留原始字典供关键词匹配。"""
+    """一条可兑换权益。match_text 是档位关键词匹配的文本面（标题+面额+单位+金币），
+    由本模块在解析时预计算——「哪些字段参与匹配」只在这里有主：
+    2026-09-30 曾对整段 JSON 子串匹配，图床 URL 里的 "6000000000…"
+    误命中 20元档的 "6000" 关键词，把 10元错兑错记。"""
     code: str
     title: str
     coin_amount: int
-    raw: dict
+    match_text: str
 
 
 @dataclass
@@ -244,7 +247,13 @@ class TaoCoinGateway:
                 code=b.get("benefitCode"),
                 title=b.get("displayTitle", ""),
                 coin_amount=b.get("reduceCoinAmount", 0),
-                raw=b,
+                # 匹配面只拼语义字段；图床 URL 等无关字段到此为止，不过 seam
+                match_text="{} {}{} {}".format(
+                    b.get("displayTitle", ""),
+                    b.get("displayAmount", ""),
+                    b.get("displayAmountUnit", ""),
+                    b.get("reduceCoinAmount", ""),
+                ),
             )
             for b in (inner.get("benefitList") or [])
         ]

@@ -2,6 +2,7 @@
 """cascade module：档位级联。按当日优先级逐档尝试兑换，失败落下一档。
 
 interface 只有一个 cascade_exchange(benefits, tiers, exchange_fn)；
+benefits 是 gateway.Benefit 列表（领域对象，不认线协议字典），
 exchange_fn 是 seam：生产注 gateway.exchange，测试注 scripted stub。
 级联契约：ExchangeFailed 落下一档；SessionExpired / RiskControlBlocked 直接抛出（当天中止）。
 WeeklyLimitReached 是 ExchangeFailed 的子类，同样落下一档，但单独计数：
@@ -29,17 +30,10 @@ class ExchangeOutcome:
 
 
 def benefit_matches_tier(item, tier):
-    """在语义字段（标题、面额、消耗金币）上命中 tier 的任一 keyword 即匹配。
-
-    不做整段 JSON 子串匹配：无关字段会误命中——真实接口里每个权益的
-    图床 URL 都含 "6000000000…"，曾让 10元项命中 20元档的 "6000" 关键词。"""
-    text = "{} {}{} {}".format(
-        item.get("displayTitle", ""),
-        item.get("displayAmount", ""),
-        item.get("displayAmountUnit", ""),
-        item.get("reduceCoinAmount", ""),
-    )
-    return any(kw in text for kw in tier["keywords"])
+    """命中 tier 的任一 keyword 即匹配。匹配面是 gateway 预计算的 match_text
+    （只含标题/面额/单位/金币等语义字段）——图床 URL 等无关字段根本过不了
+    seam，「哪些字段参与匹配」由 gateway 独家拥有。"""
+    return any(kw in item.match_text for kw in tier["keywords"])
 
 
 def daily_tier_order(tiers, rng=random, strategy="random"):
@@ -74,7 +68,7 @@ def cascade_exchange(benefits, ordered_tiers, exchange_fn):
         if not item:
             log.info("【%s】无可匹配权益，跳过", tier["label"])
             continue
-        code = item.get("benefitCode")
+        code = item.code
         if not code:
             log.warning("【%s】匹配项缺少 benefitCode，跳过", tier["label"])
             attempts.append((tier["label"], "缺少 benefitCode"))

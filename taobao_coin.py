@@ -87,9 +87,7 @@ def run_once(cfg, gateway=None, clock=None, rng=random, sleep_fn=time.sleep):
             log.info("今天红包已全部兑换过，无需操作")
             return DailyRunResult.WEEK_COMPLETE
 
-        # cascade 只认原始字典（关键词匹配在整个 JSON 上）
-        outcome = cascade_exchange(
-            [b.raw for b in snapshot.benefits], ordered, gateway.exchange)
+        outcome = cascade_exchange(snapshot.benefits, ordered, gateway.exchange)
 
         if outcome.success:
             return DailyRunResult.SUCCESS

@@ -19,9 +19,9 @@ from taobao_coin import DailyRunResult, retry_interval, run_daily_flow, run_once
 def snap(benefits=(), exchanged_all=False):
     return HomeSnapshot(
         exchanged_all=exchanged_all,
-        benefits=[Benefit(code=c, title=t, coin_amount=n, raw={
-            "benefitCode": c, "displayTitle": t, "reduceCoinAmount": n})
-            for c, t, n in benefits],
+        benefits=[Benefit(code=c, title=t, coin_amount=n,
+                          match_text="{}  {}".format(t, n))
+                  for c, t, n in benefits],
     )
 
 

@@ -10,7 +10,13 @@ from cascade import (
     cascade_exchange,
     daily_tier_order,
 )
-from gateway import ExchangeFailed, RiskControlBlocked, SessionExpired, WeeklyLimitReached
+from gateway import (
+    Benefit,
+    ExchangeFailed,
+    RiskControlBlocked,
+    SessionExpired,
+    WeeklyLimitReached,
+)
 
 TIERS = [
     {"label": "20元红包", "keywords": ["20元", "6000"]},
@@ -18,10 +24,17 @@ TIERS = [
     {"label": "5元红包", "keywords": ["5元", "1500"]},
 ]
 
+
+def benefit(code, title, coins, amount="", unit=""):
+    """按 gateway 的拼法造 match_text（标题 面额单位 金币）。"""
+    return Benefit(code=code, title=title, coin_amount=coins,
+                   match_text="{} {}{} {}".format(title, amount, unit, coins))
+
+
 BENEFITS = [
-    {"benefitCode": "code5", "displayTitle": "5元红包", "reduceCoinAmount": 1500},
-    {"benefitCode": "code20", "displayTitle": "20元红包", "reduceCoinAmount": 6000},
-    {"benefitCode": "code10", "displayTitle": "10元红包", "reduceCoinAmount": 3000},
+    benefit("code5", "5元红包", 1500),
+    benefit("code20", "20元红包", 6000),
+    benefit("code10", "10元红包", 3000),
 ]
 
 
@@ -46,51 +59,29 @@ class TestMatching(unittest.TestCase):
         self.assertFalse(benefit_matches_tier(BENEFITS[0], tier))
 
     def test_match_by_coin_count_fallback(self):
-        benefit = {"benefitCode": "x", "displayTitle": "大额红包", "reduceCoinAmount": 6000}
+        b = benefit("x", "大额红包", 6000)
         tier = {"label": "20元红包", "keywords": ["20元", "6000"]}
-        self.assertTrue(benefit_matches_tier(benefit, tier))
+        self.assertTrue(benefit_matches_tier(b, tier))
 
 
-# 真实接口返回的 10元权益（2026-09-30 抓取，字段照抄）：
-# CDN 图 URL 里的 "6000000002272" 包含子串 "6000"，
-# 全 JSON 子串匹配会让它误命中 20元档的 "6000" 关键词。
-REALISTIC_10YUAN = {
-    "asac": "2A24A17A33HG02DHKF2BEX",
-    "benefitBigPic": "https://img.alicdn.com/imgextra/i3/O1CN01Vaawln1SectM5FtJH_!!6000000002272-2-tps-96-128.png",
-    "benefitCode": "d5af47cdbfe64de9a0e5f39bdd87b0ad",
-    "direction": "每周限兑1次",
-    "displayAmount": "10",
-    "displayAmountType": "money",
-    "displayAmountUnit": "元",
-    "displayTitle": "10元红包",
-    "endTime": 1798732799000,
-    "issueStatus": 3,
-    "reduceCoinAmount": 3000,
-    "startFee": 1,
-    "startTime": 1790784000000,
-    "type": "fpRedEnvelope",
-    "useArea": "每日10点更新",
-}
+# 真实接口返回的 10元权益（2026-09-30 抓取）解析后的领域对象。
+# 当年根因是图床 URL（含 "6000000002272"）漏进匹配面误命中 20元档；
+# 如今 URL 过不了 gateway 的 match_text，该回归守卫在 test_gateway。
+REALISTIC_10YUAN = benefit("d5af47cdbfe64de9a0e5f39bdd87b0ad", "10元红包", 3000,
+                           amount="10", unit="元")
 
 
 class TestRealisticPayloadMatching(unittest.TestCase):
     """回归：2026-09-30 日志误报「✅ 兑换成功【20元红包】」，实际到账 10元。
-
-    根因：benefit_matches_tier 对整段 JSON 做子串匹配，图床 URL
-    "...6000000002272..." 命中 20元档的 "6000" 关键词，且服务端在整点后
-    重排列表使 10元项排在最前，于是 20元档兑走了 10元的 benefitCode。
-    """
-
-    def test_image_url_does_not_match_higher_tier(self):
-        tier20 = TIERS[0]
-        self.assertFalse(benefit_matches_tier(REALISTIC_10YUAN, tier20))
+    此处守「成功日志以服务端实际面额为准」；URL 误命中根因的守卫已随
+    match_text 移至 test_gateway.TestMatchText。"""
 
     def test_success_label_reflects_actual_award(self):
         # 列表里只剩 10元一项（20元整点售罄被撤下），20元档优先也必须如实报 10元
-        fn, calls = stub_exchange({REALISTIC_10YUAN["benefitCode"]: {"displayAmount": "10"}})
+        fn, calls = stub_exchange({REALISTIC_10YUAN.code: {"displayAmount": "10"}})
         outcome = cascade_exchange([REALISTIC_10YUAN], TIERS, fn)
         self.assertTrue(outcome.success)
-        self.assertEqual(calls, [REALISTIC_10YUAN["benefitCode"]])
+        self.assertEqual(calls, [REALISTIC_10YUAN.code])
         self.assertEqual(outcome.tier_label, "10元红包")
 
 
@@ -187,7 +178,7 @@ class TestCascade(unittest.TestCase):
         self.assertEqual(calls, ["code20"])
 
     def test_no_matching_benefit(self):
-        benefits = [{"benefitCode": "y", "displayTitle": "无关权益"}]
+        benefits = [benefit("y", "无关权益", 0)]
         fn, calls = stub_exchange({})
         outcome = cascade_exchange(benefits, TIERS, fn)
         self.assertFalse(outcome.success)
@@ -208,8 +199,8 @@ class TestCascade(unittest.TestCase):
 
     def test_benefit_without_code_skipped(self):
         benefits = [
-            {"displayTitle": "20元红包"},  # 缺 benefitCode
-            {"benefitCode": "code10", "displayTitle": "10元红包", "reduceCoinAmount": 3000},
+            benefit(None, "20元红包", 0),  # 缺 benefitCode
+            benefit("code10", "10元红包", 3000),
         ]
         fn, calls = stub_exchange({"code10": {"award": "10元"}})
         outcome = cascade_exchange(benefits, TIERS, fn)
