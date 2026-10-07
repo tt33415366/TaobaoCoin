@@ -4,9 +4,10 @@
 interface 收窄到领域语言：
     fetch_benefits()      -> HomeSnapshot   查可兑换权益列表
     exchange(code)        -> dict           按 benefitCode 兑换，返回奖品
-    collect_sign_reward() -> int            签到+收币（同一动作），返回本次金币数
-    sync_sign_status()    -> int            签到后状态同步（模仿页面），恒 0
+    sign_in()             -> SignOutcome    签到：完整页面挂载序列（town→已签
+                                            短路→home热身→签到→同步）由本动词独占
     query_coin_town()     -> CoinTownState  金币小镇状态：余额 + 今日是否已签
+                                            （collect 的 +X 收尾测量用）
 
 implementation 藏住：mtop H5 签名、_m_h5_tk token 刷新、API 名、asac 常量、
 data.data 双层拆包、ret 错误分类。MtopClient 是内部 transport（私有 seam），
@@ -115,6 +116,16 @@ class CoinTownState:
     """金币小镇状态：余额与今日是否已签（余额的唯一可靠来源，实测 2026-10-02）。"""
     balance: int
     signed: bool
+
+
+@dataclass
+class SignOutcome:
+    """一次 sign_in 的结果。skipped=True 表示今日已签、序列短路（只发了 town 一步）；
+    balance_before 是签到前余额（起始 town 查询失败时为 None，+X 退化为 reward 自报）。
+    收尾余额查询是 collect 的 +X 测量业务，不在本序列内（ADR 0002）。"""
+    skipped: bool
+    reward: int
+    balance_before: int = None
 
 
 # ---------------------------------------------------------------- 纯函数
@@ -276,26 +287,51 @@ class TaoCoinGateway:
 
     # -------------------------------------------------------- 每日收取动词
 
-    def collect_sign_reward(self):
-        """签到+收币（同一动作），返回本次获得金币数。已签到等业务失败抛 ExchangeFailed。
-        载荷与页面请求逐字节一致（2026-10-07 实测）：页面 JS 的 params 是序列化
-        bug（实际不发送），多带会被服务端静默吞掉——SUCCESS 但空 data、不报错。
-        签到前先做首页热身：页面挂载顺序是 town.index → queryTaoCoinHomeV2 → 签到
-        → pcSign4Sync（2026-10-07 实测校准，此前无热身且多带 params 的调用被服务端
-        静默吞掉）。town 一步由调用方（collect）先查；首页热身收在本方法内部，
-        best-effort——热身失败不阻塞签到。"""
+    def sign_in(self):
+        """签到：完整页面挂载序列由本方法独占（2026-10-07 实测校准，ADR 0001 修订 3、
+        ADR 0002）：town 起始 → 已签短路 → home 热身 → 签到 → 同步。
+        载荷与页面请求逐字节一致：页面 JS 的 params 是序列化 bug（实际不发送），
+        多带会被服务端静默吞掉——SUCCESS 但空 data、不报错。
+        热身与同步是会话铺垫（任何失败都 best-effort，含 SessionExpired——签到步刚
+        成功即证明登录态活着，cookie 探针职责由 collect 的收尾 town 查询承担）；
+        起始 town 失败仍尝试签到（balance_before=None，+X 退化为 reward 自报），
+        唯独其 SessionExpired 抛出（登录态已死，签到必然同样失败）。
+        签到步的异常（ExchangeFailed 业务失败 / SessionExpired / RiskControlBlocked）
+        原样抛出。"""
+        before = None
+        try:
+            before = self.query_coin_town()
+        except SessionExpired:
+            raise
+        except Exception as e:  # noqa: BLE001 - 起始状态只是参照，失败不致命
+            log.warning("签到前查询小镇状态失败，仍尝试签到: %s", e)
+
+        if before is not None and before.signed:
+            # 已签跳过（实测已签时 collect.reward.pc 返回空 data）：连热身也不发
+            return SignOutcome(skipped=True, reward=0,
+                               balance_before=before.balance)
+
         try:
             self.fetch_benefits()  # 页面热身（复刻挂载顺序），结果不需要
         except Exception as e:  # noqa: BLE001 - 热身只是会话铺垫，失败不致命
             log.warning("签到前首页热身失败，仍尝试签到: %s", e)
+
         _, data = self._transport.request(API_SIGN_COLLECT, {
             "bizCode": "taoCoin",
             "subBizCode": "coinTown",
             "page": "pc",
         })
-        return self._extract_reward(data, "签到+收币")
+        reward = self._extract_reward(data, "签到+收币")
 
-    def sync_sign_status(self):
+        try:  # 签到后状态同步（模仿页面行为），不带金币收益；任何失败都不
+            self._sync_sign_status()  # 吞掉已得的 reward——含 SessionExpired：
+        except Exception as e:  # noqa: BLE001 - 签到刚成功，登录态必然活着；
+            log.warning("签到状态同步失败（签到已成功）: %s", e)  # 探针职责在收尾 town
+
+        return SignOutcome(skipped=False, reward=reward,
+                           balance_before=before.balance if before else None)
+
+    def _sync_sign_status(self):
         """签到后状态同步（模仿页面行为），不带金币收益。失败抛 ExchangeFailed。"""
         _, data = self._transport.request(API_SIGN_SYNC, {})
         self._unwrap(data)

@@ -7,6 +7,7 @@ import unittest
 from gateway import (
     ExchangeFailed,
     MtopClient,
+    SessionExpired,
     TaoCoinGateway,
     WeeklyLimitReached,
     classify_biz_error,
@@ -239,84 +240,128 @@ class TestExchange(unittest.TestCase):
             gw.exchange("code10")
 
 
-class TestCollectVerbs(unittest.TestCase):
-    """收取动词：签名+收币、签到同步、金币小镇状态。payload 形状见 gateway 常量。"""
+class TestSignIn(unittest.TestCase):
+    """sign_in：完整页面挂载序列（town→已签短路→home热身→签到→同步）由 gateway 独占。
+    transport 级守全序列次序；未签/已签/各步失败语义见 ADR 0001 修订 1–3。"""
     SIGN_API = "mtop.coingame.collect.reward.pc"
     SYNC_API = "mtop.taobao.pc.growth.taocoin.pcSign4Sync"
     TOWN_API = "mtop.coingame.town.index.get.pc"
     HOME_API = "mtop.taobao.pc.growth.taocoin.queryTaoCoinHomeV2"
 
-    def test_sign_collect_warms_up_home_first(self):
-        # 页面挂载顺序复刻（2026-10-07 实测校准）：签到前先发首页热身
-        t = FakeTransport({
+    @staticmethod
+    def town(balance, signed):
+        return ("SUCCESS", {"model": {
+            "userInfo": {"coinAmount": balance},
+            "userSign": {"signed": signed},
+        }})
+
+    def unsigned_script(self):
+        return {
+            self.TOWN_API: self.town(100, False),
             self.HOME_API: HOME_OK,
             self.SIGN_API: ("SUCCESS", {"code": 200, "data": {"totalCoinReward": 5}}),
-        })
-        gw = TaoCoinGateway("c", transport=t)
-        self.assertEqual(gw.collect_sign_reward(), 5)
-        self.assertEqual([api for api, _ in t.calls], [self.HOME_API, self.SIGN_API])
+            self.SYNC_API: ("SUCCESS", {"code": 200, "data": {"ok": True}}),
+        }
 
-    def test_sign_collect_warmup_failure_still_signs(self):
-        # 热身只是会话铺垫：首页挂了签到照常发
-        t = FakeTransport({
-            self.HOME_API: ExchangeFailed("活动太火爆"),
-            self.SIGN_API: ("SUCCESS", {"code": 200, "data": {"totalCoinReward": 5}}),
-        })
-        gw = TaoCoinGateway("c", transport=t)
-        self.assertEqual(gw.collect_sign_reward(), 5)
-        self.assertEqual([api for api, _ in t.calls], [self.HOME_API, self.SIGN_API])
+    def test_unsigned_runs_full_mount_sequence_in_order(self):
+        # 页面挂载顺序（2026-10-07 实测校准）：town → home 热身 → 签到 → 同步
+        t = FakeTransport(self.unsigned_script())
+        outcome = TaoCoinGateway("c", transport=t).sign_in()
+        self.assertEqual([api for api, _ in t.calls],
+                         [self.TOWN_API, self.HOME_API, self.SIGN_API, self.SYNC_API])
+        self.assertFalse(outcome.skipped)
+        self.assertEqual(outcome.reward, 5)
+        self.assertEqual(outcome.balance_before, 100)
 
-    def test_sign_collect_sends_page_payload(self):
-        t = FakeTransport({
-            self.HOME_API: HOME_OK,
-            self.SIGN_API: ("SUCCESS", {"code": 200, "data": {"totalCoinReward": 5}}),
-        })
-        gw = TaoCoinGateway("c", transport=t)
-        self.assertEqual(gw.collect_sign_reward(), 5)
-        _, data = t.calls[1]  # calls[0] 是首页热身
-        # 与页面请求逐字节一致（2026-10-07 实测）：页面 JS 的 params 是序列化 bug
-        # 实际不发送；多带 params 会被服务端静默吞掉（SUCCESS 但空 data）
-        self.assertEqual(data, {
-            "bizCode": "taoCoin",
-            "subBizCode": "coinTown",
-            "page": "pc",
-        })
+    def test_already_signed_short_circuits_after_town(self):
+        # 今日已签：序列短路在 town 之后——连热身也不发（无意义请求不发）
+        t = FakeTransport({self.TOWN_API: self.town(154058, True)})
+        outcome = TaoCoinGateway("c", transport=t).sign_in()
+        self.assertEqual([api for api, _ in t.calls], [self.TOWN_API])
+        self.assertTrue(outcome.skipped)
+        self.assertEqual(outcome.reward, 0)
+        self.assertEqual(outcome.balance_before, 154058)
 
-    def test_sign_collect_reward_at_outer_layer(self):
-        # coingame 系接口可能不套双层 data：外层的 totalCoinReward 也要认
-        gw = TaoCoinGateway("c", transport=FakeTransport({
-            self.HOME_API: HOME_OK,
-            self.SIGN_API: ("SUCCESS", {"code": 200, "totalCoinReward": 8}),
-        }))
-        self.assertEqual(gw.collect_sign_reward(), 8)
+    def test_initial_town_failure_still_signs(self):
+        # 起始 town 查询失败不致命：仍尝试签到，balance_before 缺省为 None
+        script = self.unsigned_script()
+        script[self.TOWN_API] = ExchangeFailed("小镇接口变更")
+        t = FakeTransport(script)
+        outcome = TaoCoinGateway("c", transport=t).sign_in()
+        self.assertEqual([api for api, _ in t.calls],
+                         [self.TOWN_API, self.HOME_API, self.SIGN_API, self.SYNC_API])
+        self.assertIsNone(outcome.balance_before)
+        self.assertEqual(outcome.reward, 5)
 
-    def test_sign_collect_failure_uses_result_msg(self):
-        # 当日已签到等场景：totalCoinReward 为空，resultMsg 透出原因
-        gw = TaoCoinGateway("c", transport=FakeTransport({
-            self.HOME_API: HOME_OK,
-            self.SIGN_API: ("SUCCESS", {"code": 200,
-                                        "data": {"resultMsg": "今日已签到"}}),
-        }))
+    def test_warmup_failure_still_signs(self):
+        # 首页热身只是会话铺垫：挂了签到照常发
+        script = self.unsigned_script()
+        script[self.HOME_API] = ExchangeFailed("活动太火爆")
+        t = FakeTransport(script)
+        outcome = TaoCoinGateway("c", transport=t).sign_in()
+        self.assertEqual(outcome.reward, 5)
+        self.assertEqual([api for api, _ in t.calls],
+                         [self.TOWN_API, self.HOME_API, self.SIGN_API, self.SYNC_API])
+
+    def test_sync_failure_keeps_reward(self):
+        # 同步只模仿页面、不带收益：失败不吞掉已得的 reward
+        script = self.unsigned_script()
+        script[self.SYNC_API] = ExchangeFailed("同步失败")
+        outcome = TaoCoinGateway("c", transport=FakeTransport(script)).sign_in()
+        self.assertEqual(outcome.reward, 5)
+
+    def test_sync_session_expired_keeps_reward(self):
+        # 同步报登录失效也不抛出：签到数秒前刚成功，登录态必然活着；
+        # cookie 探针职责由收尾 town 查询（collect 侧）承担
+        script = self.unsigned_script()
+        script[self.SYNC_API] = SessionExpired("登录失效")
+        outcome = TaoCoinGateway("c", transport=FakeTransport(script)).sign_in()
+        self.assertEqual(outcome.reward, 5)
+        self.assertEqual(outcome.balance_before, 100)
+
+    def test_sign_business_failure_raises_with_result_msg(self):
+        # 签到业务失败（如 town 未标但当日已签）：ExchangeFailed 透出 resultMsg
+        script = self.unsigned_script()
+        script[self.SIGN_API] = ("SUCCESS", {"code": 200,
+                                             "data": {"resultMsg": "今日已签到"}})
         with self.assertRaises(ExchangeFailed) as cm:
-            gw.collect_sign_reward()
+            TaoCoinGateway("c", transport=FakeTransport(script)).sign_in()
         self.assertIn("今日已签到", str(cm.exception))
 
-    def test_sign_collect_business_error_code(self):
-        gw = TaoCoinGateway("c", transport=FakeTransport({
-            self.HOME_API: HOME_OK,
-            self.SIGN_API: ("SUCCESS", {"code": -1, "message": "活动太火爆"}),
-        }))
+    def test_sign_payload_byte_identical_to_page(self):
+        # 与页面请求逐字节一致：页面 JS 的 params 是序列化 bug，多带会被静默吞掉
+        t = FakeTransport(self.unsigned_script())
+        TaoCoinGateway("c", transport=t).sign_in()
+        payloads = {api: data for api, data in t.calls}
+        self.assertEqual(payloads[self.SIGN_API], {
+            "bizCode": "taoCoin", "subBizCode": "coinTown", "page": "pc"})
+        self.assertEqual(payloads[self.TOWN_API], {
+            "bizCode": "taoCoin", "subBizCode": "coinTown"})
+
+    def test_session_expired_propagates(self):
+        script = self.unsigned_script()
+        script[self.TOWN_API] = SessionExpired("登录失效")
+        with self.assertRaises(SessionExpired):
+            TaoCoinGateway("c", transport=FakeTransport(script)).sign_in()
+
+    def test_sign_reward_at_outer_layer(self):
+        # coingame 系接口可能不套双层 data：外层的 totalCoinReward 也要认
+        script = self.unsigned_script()
+        script[self.SIGN_API] = ("SUCCESS", {"code": 200, "totalCoinReward": 8})
+        outcome = TaoCoinGateway("c", transport=FakeTransport(script)).sign_in()
+        self.assertEqual(outcome.reward, 8)
+
+    def test_sign_business_error_code_raises(self):
+        script = self.unsigned_script()
+        script[self.SIGN_API] = ("SUCCESS", {"code": -1, "message": "活动太火爆"})
         with self.assertRaises(ExchangeFailed) as cm:
-            gw.collect_sign_reward()
+            TaoCoinGateway("c", transport=FakeTransport(script)).sign_in()
         self.assertIn("活动太火爆", str(cm.exception))
 
-    def test_sync_sign_status_sends_empty_data(self):
-        t = FakeTransport({
-            self.SYNC_API: ("SUCCESS", {"code": 200, "data": {"ok": True}}),
-        })
-        gw = TaoCoinGateway("c", transport=t)
-        self.assertEqual(gw.sync_sign_status(), 0)  # 同步只模仿页面，不带收益
-        self.assertEqual(t.calls[0][1], {})
+
+class TestQueryCoinTown(unittest.TestCase):
+    """金币小镇状态：余额 + 今日是否已签。collect 的 +X 收尾测量用。"""
+    TOWN_API = "mtop.coingame.town.index.get.pc"
 
     def test_query_coin_town_parses_balance_and_signed(self):
         # 实测信封（2026-10-02）：model.userInfo.coinAmount / model.userSign.signed
