@@ -244,14 +244,36 @@ class TestCollectVerbs(unittest.TestCase):
     SIGN_API = "mtop.coingame.collect.reward.pc"
     SYNC_API = "mtop.taobao.pc.growth.taocoin.pcSign4Sync"
     TOWN_API = "mtop.coingame.town.index.get.pc"
+    HOME_API = "mtop.taobao.pc.growth.taocoin.queryTaoCoinHomeV2"
 
-    def test_sign_collect_sends_page_payload(self):
+    def test_sign_collect_warms_up_home_first(self):
+        # 页面挂载顺序复刻（2026-10-07 实测校准）：签到前先发首页热身
         t = FakeTransport({
+            self.HOME_API: HOME_OK,
             self.SIGN_API: ("SUCCESS", {"code": 200, "data": {"totalCoinReward": 5}}),
         })
         gw = TaoCoinGateway("c", transport=t)
         self.assertEqual(gw.collect_sign_reward(), 5)
-        _, data = t.calls[0]
+        self.assertEqual([api for api, _ in t.calls], [self.HOME_API, self.SIGN_API])
+
+    def test_sign_collect_warmup_failure_still_signs(self):
+        # 热身只是会话铺垫：首页挂了签到照常发
+        t = FakeTransport({
+            self.HOME_API: ExchangeFailed("活动太火爆"),
+            self.SIGN_API: ("SUCCESS", {"code": 200, "data": {"totalCoinReward": 5}}),
+        })
+        gw = TaoCoinGateway("c", transport=t)
+        self.assertEqual(gw.collect_sign_reward(), 5)
+        self.assertEqual([api for api, _ in t.calls], [self.HOME_API, self.SIGN_API])
+
+    def test_sign_collect_sends_page_payload(self):
+        t = FakeTransport({
+            self.HOME_API: HOME_OK,
+            self.SIGN_API: ("SUCCESS", {"code": 200, "data": {"totalCoinReward": 5}}),
+        })
+        gw = TaoCoinGateway("c", transport=t)
+        self.assertEqual(gw.collect_sign_reward(), 5)
+        _, data = t.calls[1]  # calls[0] 是首页热身
         # 与页面请求逐字节一致（2026-10-07 实测）：页面 JS 的 params 是序列化 bug
         # 实际不发送；多带 params 会被服务端静默吞掉（SUCCESS 但空 data）
         self.assertEqual(data, {
@@ -263,6 +285,7 @@ class TestCollectVerbs(unittest.TestCase):
     def test_sign_collect_reward_at_outer_layer(self):
         # coingame 系接口可能不套双层 data：外层的 totalCoinReward 也要认
         gw = TaoCoinGateway("c", transport=FakeTransport({
+            self.HOME_API: HOME_OK,
             self.SIGN_API: ("SUCCESS", {"code": 200, "totalCoinReward": 8}),
         }))
         self.assertEqual(gw.collect_sign_reward(), 8)
@@ -270,6 +293,7 @@ class TestCollectVerbs(unittest.TestCase):
     def test_sign_collect_failure_uses_result_msg(self):
         # 当日已签到等场景：totalCoinReward 为空，resultMsg 透出原因
         gw = TaoCoinGateway("c", transport=FakeTransport({
+            self.HOME_API: HOME_OK,
             self.SIGN_API: ("SUCCESS", {"code": 200,
                                         "data": {"resultMsg": "今日已签到"}}),
         }))
@@ -279,6 +303,7 @@ class TestCollectVerbs(unittest.TestCase):
 
     def test_sign_collect_business_error_code(self):
         gw = TaoCoinGateway("c", transport=FakeTransport({
+            self.HOME_API: HOME_OK,
             self.SIGN_API: ("SUCCESS", {"code": -1, "message": "活动太火爆"}),
         }))
         with self.assertRaises(ExchangeFailed) as cm:

@@ -7,8 +7,8 @@ interface 只有一个 run_daily_collection(gateway)，返回 DailyCollectionRes
 流程（2026-10-02 实测校准后）：
     1. 查金币小镇状态（town.index.get.pc）：余额 + 今日是否已签
        ——余额的唯一可靠来源；首页 queryTaoCoinHomeV2 不带余额
-    2. 已签则记「今日已签到」跳过；未签才 签到+收币（collect.reward.pc）
-       再 签到状态同步（pcSign4Sync，模仿页面行为）
+    2. 已签则记「今日已签到」跳过；未签才 签到+收币（collect.reward.pc，页面热身
+       在 gateway 内部完成）再 签到状态同步（pcSign4Sync，模仿页面行为）
     3. 收尾再查一次小镇状态，+X 取余额差——免疫金币字段名猜测；
        起始状态没查到才退化为签到接口自报的 reward
 
@@ -54,19 +54,13 @@ def run_daily_collection(gateway):
         log.warning("查询金币小镇状态失败，仍尝试签到（+X 按签到接口自报记）: %s", e)
         before = None
 
-    # 2. 签到：已签跳过（实测已签时 collect.reward.pc 返回空 data，属正常结局）
+    # 2. 签到：已签跳过（实测已签时 collect.reward.pc 返回空 data，属正常结局）。
+    # 页面热身已收进 gateway.collect_sign_reward 内部（页面挂载顺序是协议细节，
+    # 由 gateway 独家持有）；已签跳过则连签到带热身都不发（无意义请求不发）。
     reward_from_sign = 0
     if before is not None and before.signed:
         log.info("今日已签到，跳过签到动作")
     else:
-        # 未签才做页面热身（2026-10-07 实测校准）：页面挂载时先调
-        # town.index + queryTaoCoinHomeV2 再发签到。复刻这个顺序后签到成功
-        # （此前无热身且多带 params 的调用被服务端静默吞掉：SUCCESS 但空 data）。
-        # 热身失败不阻塞签到；已签跳过则连热身也不发（无意义请求不发）。
-        try:
-            gateway.fetch_benefits()
-        except Exception as e:  # noqa: BLE001 - 热身只是会话铺垫，失败不致命
-            log.warning("签到前首页热身失败，仍尝试签到: %s", e)
         for label, action in (("签到+收币", gateway.collect_sign_reward),
                               ("签到状态同步", gateway.sync_sign_status)):
             try:

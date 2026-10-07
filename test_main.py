@@ -291,8 +291,9 @@ class TestRunDailyFlow(unittest.TestCase):
         sleeper = FakeSleeper()
         result = run_flow(gw, rng=rng, sleeper=sleeper)
         self.assertEqual(result, DailyRunResult.WEEK_COMPLETE)
-        # 全档周限不重试：探测 1 次 + 级联 1 轮 1 次 + 签到前首页热身 1 次
-        self.assertEqual(gw.fetch_count, 3)
+        # 全档周限不重试：探测 1 次 + 级联 1 轮 1 次
+        # （签到热身已收进 gateway 内部，编排层不可见）
+        self.assertEqual(gw.fetch_count, 2)
         self.assertEqual(len(gw.exchange_calls), 3)
         self.assertIn("collect_sign_reward", gw.collect_calls)
         self.assertEqual(sleeper.slept, [])  # 周限转换的收取也不抖动
@@ -344,8 +345,8 @@ class TestRunDailyFlow(unittest.TestCase):
         sleeper = FakeSleeper()
         result = run_flow(gw, cfg=cfg, rng=rng, sleeper=sleeper)
         self.assertEqual(result, DailyRunResult.FAILED)
-        # 重试耗尽：探测 1 次 + 级联 2 轮 + 签到前首页热身 1 次
-        self.assertEqual(gw.fetch_count, 4)
+        # 重试耗尽：探测 1 次 + 级联 2 轮
+        self.assertEqual(gw.fetch_count, 3)
         self.assertEqual(gw.collect_calls, ["query_coin_town",
                                             "collect_sign_reward",
                                             "sync_sign_status",
@@ -366,7 +367,7 @@ class TestFeaturesToggleDailyFlow(unittest.TestCase):
 
     def test_exchange_disabled_makes_pure_collection_day(self):
         # 关兑换 → 纯收取日：无模式探测、有抖动、只做收取
-        # （唯一一次 fetch 是签到前的页面热身，不是模式判定探测）
+        # （签到热身已收进 gateway 内部，编排层零 fetch）
         cfg = FakeCfg()
         cfg.exchange_enabled = False
         rng = FakeRng(uniform_value=10.0)
@@ -374,7 +375,7 @@ class TestFeaturesToggleDailyFlow(unittest.TestCase):
         sleeper = FakeSleeper()
         result = run_flow(gw, cfg=cfg, rng=rng, sleeper=sleeper)
         self.assertEqual(result, DailyRunResult.WEEK_COMPLETE)
-        self.assertEqual(gw.fetch_count, 1)  # 签到热身，非模式探测
+        self.assertEqual(gw.fetch_count, 0)  # 无模式探测
         self.assertEqual(gw.exchange_calls, [])
         self.assertEqual(rng.uniform_calls, [(0, 30)])
         self.assertEqual(sleeper.slept, [600.0])

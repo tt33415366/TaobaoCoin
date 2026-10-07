@@ -77,3 +77,13 @@
 **修复**：签到与小镇接口载荷改为与页面逐字节一致（去掉 `params`）；未签时按页面挂载顺序热身（`town.index` → `queryTaoCoinHomeV2` → 签到 → `pcSign4Sync`），已签跳过则连热身也不发。实测：第二账号签到成功（`totalCoinReward:"100"`，日历 124→125，余额 304→404）。
 
 **未决变量（如实记录）**：本次同时改变了「去掉 params」与「增加热身」两个变量，未做二分——复刻页面请求顺序本身是目标稳态，但严格说 warmup 是否必需未被单独验证。若未来签到再次静默失效，第一个该二分的就在这里。
+
+## 修订 3（2026-10-07，页面热身归位 gateway）
+
+架构复审发现热身知识漏在编排层：collect.py 调 `fetch_benefits()` 却丢弃返回值，真实意图（复刻页面挂载顺序给签到热身）只有注释知道——协议细节漏过了 Gateway 的 seam。
+
+**调整**：首页热身收进 `gateway.collect_sign_reward()` 内部（best-effort，失败不阻塞签到，语义不变）；页面挂载顺序（town → home → 签到 → 同步）的知识由 gateway 独家持有，collect 不再持有热身概念。请求载荷与顺序逐字节不变；顺序回归分两层守——test_collect 守 gateway 动词次序，test_gateway 守 transport 级 home 先于 sign。
+
+**对修订 2 未决变量的影响**：「去掉 params 与增加热身未做二分」的状态不变；但若未来签到再次静默失效，二分点现在只有一个位置——`gateway.collect_sign_reward`。
+
+同一轮复审还删掉了 `Benefit.raw`：档位关键词匹配改走 gateway 预计算的 `match_text`（只含标题/面额/单位/金币），线协议字段名不再漏进 cascade；图床 URL 误命中的回归守卫随测试搬到 test_gateway。

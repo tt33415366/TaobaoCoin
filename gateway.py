@@ -279,7 +279,15 @@ class TaoCoinGateway:
     def collect_sign_reward(self):
         """签到+收币（同一动作），返回本次获得金币数。已签到等业务失败抛 ExchangeFailed。
         载荷与页面请求逐字节一致（2026-10-07 实测）：页面 JS 的 params 是序列化
-        bug（实际不发送），多带会被服务端静默吞掉——SUCCESS 但空 data、不报错。"""
+        bug（实际不发送），多带会被服务端静默吞掉——SUCCESS 但空 data、不报错。
+        签到前先做首页热身：页面挂载顺序是 town.index → queryTaoCoinHomeV2 → 签到
+        → pcSign4Sync（2026-10-07 实测校准，此前无热身且多带 params 的调用被服务端
+        静默吞掉）。town 一步由调用方（collect）先查；首页热身收在本方法内部，
+        best-effort——热身失败不阻塞签到。"""
+        try:
+            self.fetch_benefits()  # 页面热身（复刻挂载顺序），结果不需要
+        except Exception as e:  # noqa: BLE001 - 热身只是会话铺垫，失败不致命
+            log.warning("签到前首页热身失败，仍尝试签到: %s", e)
         _, data = self._transport.request(API_SIGN_COLLECT, {
             "bizCode": "taoCoin",
             "subBizCode": "coinTown",
