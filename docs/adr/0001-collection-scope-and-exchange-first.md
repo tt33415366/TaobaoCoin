@@ -87,3 +87,7 @@
 **对修订 2 未决变量的影响**：「去掉 params 与增加热身未做二分」的状态不变；但若未来签到再次静默失效，二分点现在只有一个位置——`gateway.collect_sign_reward`。
 
 同一轮复审还删掉了 `Benefit.raw`：档位关键词匹配改走 gateway 预计算的 `match_text`（只含标题/面额/单位/金币），线协议字段名不再漏进 cascade；图床 URL 误命中的回归守卫随测试搬到 test_gateway。
+
+## 修订 4（2026-10-07，页面序列收口完成）
+
+修订 3 的收口现在完成：town 预热、已签短路、收尾同步全部入 `gateway.sign_in()`，collect 不再持有任何页面顺序知识，`collect_sign_reward` / `sync_sign_status` 从 gateway interface 删除。边界判定：收尾 town 查询是 +X 余额差测量（修订 1 的业务），不是页面挂载序列，留在 collect。详见 [ADR 0002](0002-day-mode-module-and-sign-in-consolidation.md)（当日模式 module 的诞生、SignOutcome 字段集、双 fetch 依据）。

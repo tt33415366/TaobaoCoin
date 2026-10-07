@@ -49,10 +49,10 @@
    python3 taobao_coin.py --collect
    ```
 
-   先查金币小镇状态（余额 + 今日是否已签），未签才执行签到+收币与状态同步
-   （页面挂载顺序的热身收在 `gateway.collect_sign_reward` 内部，best-effort），
-   打印摘要「今日收取 +X，余额 Y」（+X 取收取前后余额差）。
-   已签到时记「今日已签到」并跳过——当日已签、余额照报是正常结局，不是失败。
+   完整页面挂载顺序（小镇状态→已签短路→首页热身→签到→状态同步）收在
+   `gateway.sign_in()` 内部；已签到时序列短路、记「今日已签到」——当日已签、
+   余额照报是正常结局，不是失败。
+   打印摘要「今日收取 +X，余额 Y」（+X 取收取前后余额差，收尾查询由 collect 发起）。
    签到/小镇接口的载荷与页面请求逐字节一致（页面 JS 的 params 是序列化 bug，
    多带会被服务端静默吞掉）；金币字段名兜底常量为 `REWARD_FIELDS`（`gateway.py` 顶部）。
 
@@ -83,9 +83,10 @@
 
 | 文件 | module | 职责 |
 |---|---|---|
-| `taobao_coin.py` | 薄入口 | CLI、常驻循环、重试编排、狙击日/收菜日状态机 |
-| `gateway.py` | 淘金币 Gateway | mtop 签名 / token 刷新 / 拆包 / 错误分类，对外是 `fetch_benefits()`、`exchange(code)` 与收取动词（签到+收币 / 状态同步 / 小镇状态） |
-| `collect.py` | 每日收取 | 签到编排（已签跳过、失败隔离、余额差计收益）与摘要「今日收取 +X，余额 Y」 |
+| `taobao_coin.py` | 薄入口 | CLI、常驻循环、退出码映射（纯接线） |
+| `day_mode.py` | 当日模式 | 狙击日/收菜日/纯收取日的推导与执行、features 决策点、收取摘要渲染 |
+| `gateway.py` | 淘金币 Gateway | mtop 签名 / token 刷新 / 拆包 / 错误分类，对外是 `fetch_benefits()`、`exchange(code)`、`sign_in()`（页面挂载序列独占）与 `query_coin_town()` |
+| `collect.py` | 每日收取 | DailyCollection 业务语义：失败隔离、+X 余额差、摘要「今日收取 +X，余额 Y」 |
 | `cascade.py` | 档位级联 | 按优先级逐档尝试，`exchange_fn` 是可注入的 seam |
 | `snipe_clock.py` | 狙击时钟 | 时钟校准 + 准点等待 |
 | `config.py` | Config | 加载、默认值、cookie 校验 |
@@ -107,7 +108,7 @@
 | `features` | 全开 | 功能开关：`exchange` = 每日狙击兑换；`collect` = 每日收取。关 `collect`：只兑换（收菜日同时失去 cookie 存活探针）；关 `exchange`：每天都是纯收取日（无首页探测，抖动后只收取）。两者不能同时为 `false`（启动报错）。`--now`/`--collect` 手动调用不受开关限制 |
 | `tiers` | 20/10/5 元三档 | 档位关键词，`keywords` 命中权益的面额/金币字段即匹配 |
 
-收取的抖动上限（`COLLECTION_JITTER_MINUTES`）在 `taobao_coin.py`，
+收取的抖动上限（`COLLECTION_JITTER_MINUTES`）在 `day_mode.py`，
 收取接口的 spm/金币字段名/载荷常量在 `gateway.py` 顶部，需要调整时直接改常量。
 
 ## 注意事项
@@ -118,4 +119,4 @@
 - cookie 有效期通常几天到几周，过期后日志会提示「登录态失效」，重新粘贴即可。
 - 兑换涉及资金，淘宝风控偶尔会要求滑块验证，脚本无法过滑块——当天会失败并写日志，第二天自动重试。
 - 金币余额不足时兑换接口会返回失败，属于正常情况（先攒金币）。
-- 单元测试：`python3 -m unittest discover -p "test_*.py"`（97 个）
+- 单元测试：`python3 -m unittest discover -p "test_*.py"`（116 个）
